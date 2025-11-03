@@ -7,9 +7,17 @@ from datetime import datetime
 
 from sensors import Sensor, SensorManager
 from models.sensor import SensorReading, SensorInfo, SensorStatus
+from etl.process import ETLPipeline
+from analytics.stats import SensorAnalytics
 
 # Gerenciador global de sensores
 manager = SensorManager()
+
+# Pipeline ETL
+etl = ETLPipeline()
+
+# Analytics
+analytics = SensorAnalytics()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -243,3 +251,91 @@ async def get_summary():
             for sid, count in sensor_counts.items()
         ]
     }
+
+# ============================================================================
+# ROTAS - ETL
+# ============================================================================
+
+@app.post("/etl/run", tags=["ETL"])
+async def run_etl_pipeline():
+    """
+    Executa pipeline ETL manualmente.
+    
+    Processo:
+    1. Extrai dados de raw_data.csv
+    2. Limpa e transforma dados
+    3. Salva em processed.csv
+    """
+    success = etl.run()
+    
+    if success:
+        stats = etl.get_processing_stats()
+        return {
+            "status": "success",
+            "message": "Pipeline ETL executado com sucesso",
+            "stats": stats
+        }
+    else:
+        raise HTTPException(
+            status_code=500, 
+            detail="Erro ao executar pipeline ETL"
+        )
+
+@app.get("/etl/stats", tags=["ETL"])
+async def get_etl_stats():
+    """Retorna estatísticas sobre dados processados."""
+    return etl.get_processing_stats()
+
+# ============================================================================
+# ROTAS - ANALYTICS
+# ============================================================================
+
+@app.get("/analytics/{sensor_id}/statistics", tags=["Analytics"])
+async def get_sensor_statistics(sensor_id: str):
+    """
+    Retorna estatísticas descritivas de um sensor.
+    
+    Inclui: média, mediana, desvio padrão, min, max, quartis, etc.
+    """
+    stats = analytics.calculate_statistics(sensor_id)
+    
+    if "error" in stats:
+        raise HTTPException(status_code=404, detail=stats["error"])
+    
+    return stats
+
+@app.get("/analytics/{sensor_id}/outliers", tags=["Analytics"])
+async def get_outliers(
+    sensor_id: str,
+    method: str = Query("iqr", regex="^(iqr|zscore)$", description="Método de detecção: iqr ou zscore")
+):
+    """
+    Detecta outliers nos dados de um sensor.
+    
+    Métodos disponíveis:
+    - **iqr**: Interquartile Range (padrão)
+    - **zscore**: Z-score (3 desvios padrão)
+    """
+    outliers = analytics.detect_outliers(sensor_id, method=method)
+    
+    if "error" in outliers:
+        raise HTTPException(status_code=404, detail=outliers["error"])
+    
+    return outliers
+
+@app.get("/analytics/{sensor_id}/trend", tags=["Analytics"])
+async def get_trend(
+    sensor_id: str,
+    window: int = Query(10, ge=2, le=100, description="Tamanho da janela para média móvel")
+):
+    """
+    Retorna análise de tendência usando média móvel.
+    
+    - **window**: Tamanho da janela (padrão: 10 leituras)
+    """
+    trend = analytics.get_trend(sensor_id, window=window)
+    
+    if "error" in trend:
+        raise HTTPException(status_code=404, detail=trend["error"])
+    
+    return trend
